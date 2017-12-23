@@ -17,21 +17,33 @@
 
 
 const byte delayA = 1;  //1++ 0-- No delay is also possible
-const unsigned int delayB = 20000; // 10000-- 20000++ 15000++     //KRITISCH
+const unsigned int delayB = 2000; // 10000-- 20000++ 15000++     //KRITISCH
 const byte delayC = 10;  //255++ 128++ 64--
 const byte delayD = 0;  //200++ 128+++ 64+++ 32+++ 8++
 const byte delayE = 200;
 
 const boolean DEBUG = true;   //Some simple communication by RS232
 
-byte AddressByteA = 0x01;
-byte AddressByteB = 0x01;
+// fixed address
+static const byte baseAddress = 0x12;
 
+static const int CHANNEL_NUM = 4;
+
+//input states
+bool inState[CHANNEL_NUM] = {false};
 
 void setup(){
+  //bind input
+  pinMode(2, INPUT_PULLUP);
+  //control inputs
+  pinMode(3, INPUT_PULLUP);
+  pinMode(4, INPUT_PULLUP);
+  pinMode(5, INPUT_PULLUP);
+  pinMode(6, INPUT_PULLUP);
+
   pinMode(SS,OUTPUT);
   if(DEBUG){
-    Serial.begin(9600);
+    Serial.begin(115200);
     Serial.println("Debug mode");
     Serial.print("Initialisation");
   }
@@ -41,44 +53,42 @@ void setup(){
   SendStrobe(CC2500_SRES); //0x30 SRES Reset chip.
   init_CC2500();
   //  SendStrobe(CC2500_SPWD); //Enter power down mode    -   Not used in the prototype
-  WriteReg(0x3E,0xFF);  //Maximum transmit power - write 0xFF to 0x3E (PATABLE)
+  //WriteReg(0x3E,0xFF);  //Maximum transmit power - write 0xFF to 0x3E (PATABLE)
   if(DEBUG){
     Serial.println(" - Done");
   }
-}
 
+  delay(1000);
+  SendCommand(baseAddress, 0x00, Light_OFF);
+  SendCommand(baseAddress, 0x01, Light_OFF);
+  SendCommand(baseAddress, 0x02, Light_OFF);
+  SendCommand(baseAddress, 0x03, Light_OFF);
+}
 
 
 void loop(){
-  //Some demo loop
+  bool inStateAct;
 
-  /*** Read adress from another remote wireless ***/
-  /*** Push the button on the original remote ***/
-
-  ReadAddressBytes(); //Read Address Bytes From a remote by sniffing its packets wireless
- 
-
-  /*** Send the command to turn the light on 50% ***/
-  SendCommand(AddressByteA,AddressByteB, Light_ON_50);
-  delay(1000);
-  
-
-  /*** Send the command to turn the light on 50% ***/
-  SendCommand(AddressByteA,AddressByteB, Light_ON_100);
-  delay(1000);
-  
-
-  /*** Send the command to turn the light off ***/
-  SendCommand(AddressByteA,AddressByteB, Light_OFF);
-  delay(1000);
-
-
-  /*** Send the command to pair the transformer with this remote ***/
-  SendCommand(AddressByteA,AddressByteB, Light_PAIR);
-  delay(1000);
-  
+  for (int i = 0; i < CHANNEL_NUM; i++) {
+    inStateAct = digitalRead(3 + i);
+    if (inStateAct && !inState[i]) {
+      if (digitalRead(2)) {
+        SendCommand(baseAddress, i, Light_ON_100);
+      } else {
+        SendCommand(baseAddress, i, Light_PAIR);
+      }
+    } else if (!inStateAct && inState[i]) {
+      if (digitalRead(2)) {
+        SendCommand(baseAddress, i, Light_OFF);
+      } else {
+        SendCommand(baseAddress, i, Light_PAIR);
+      }
+    }
+    inState[i] = inStateAct;
+  }
 }
 
+#if 0
 void ReadAddressBytes(){     //Read Address Bytes From a remote by sniffing its packets wireless
    byte tries=0;
    boolean AddressFound = false;
@@ -142,6 +152,7 @@ void ReadAddressBytes(){     //Read Address Bytes From a remote by sniffing its 
     Serial.println(" - Done");
    }
 }
+#endif
 
 byte ReadReg(byte addr){
   addr = addr + 0x80;
@@ -179,7 +190,7 @@ void SendCommand(byte AddressByteA, byte AddressByteB, byte Command){
       SendStrobe(CC2500_SIDLE);   //0x36 SIDLE Exit RX / TX, turn off frequency synthesizer and exit Wake-On-Radio mode if applicable.
       SendStrobe(CC2500_SFTX);    //0x3B SFTX Flush the TX FIFO buffer. Only issue SFTX in IDLE or TXFIFO_UNDERFLOW states.
       digitalWrite(SS,LOW);
-      while (digitalRead(MISO) == HIGH) { };  //Wait untill MISO high
+      while (digitalRead(MISO) == HIGH) { /*TODO: timeout*/ };  //Wait untill MISO high
       SPI.transfer(0x7F);
       delayMicroseconds(delayA);
       SPI.transfer(0x06);
