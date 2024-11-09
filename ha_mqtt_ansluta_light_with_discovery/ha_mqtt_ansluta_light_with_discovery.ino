@@ -41,15 +41,18 @@ const byte delayC = 10;  //255++ 128++ 64--
 const byte delayD = 0;  //200++ 128+++ 64+++ 32+++ 8++
 const byte delayE = 200;
 
-const boolean DEBUG = true;   //Some simple communication by RS232
+const boolean DEBUG = false;   //Some simple communication by RS232 // TODO merge with the other debug method used 
 
 // fixed address of ANSLUTA remote
 static const byte baseAddress = 0x12;
 
 // Number of different remote channels
 static const int CHANNEL_NUM = 5;
+
 // Brightness thresholds / offsets for the different channels.
-// each channel will turn ON 50% when brightness + channelThreshold > 127
+// each channel will turn ON 50% when the set brightness >= CHANNEL_THRESHOLD[i]
+// (The reasoning is that we can set the brightness of each light differently  
+// to give us some facsimile of having more brightness levels than just 0 - 50% - 100%)
 static const int[] CHANNEL_THRESHOLD = {85, 29, 57, 1, 113};
 
 #if defined(DEBUG_TELNET)
@@ -271,6 +274,12 @@ void handleMQTTMessage(char* p_topic, byte* p_payload, unsigned int p_length) {
         DEBUG_PRINTLN(bulb.getBrightness());
         cmd = CMD_STATE_CHANGED;
       }
+    }
+
+    // To send a remote pairing command, set a "pair" key in the MQTT command topic. 
+    // pair: 0 => 0th channel, pair: 1 => 1st channel, etc.
+    if (root.containsKey("pair")){
+      SendCommand(baseAddress, root["pair"], Light_PAIR);
     }
   }
 }
