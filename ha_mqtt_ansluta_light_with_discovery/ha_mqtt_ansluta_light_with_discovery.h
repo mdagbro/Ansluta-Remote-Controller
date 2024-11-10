@@ -29,4 +29,3 @@ class OnOffBrightnessBulb {
     uint8_t   m_brightness;
 
 };
-#endif

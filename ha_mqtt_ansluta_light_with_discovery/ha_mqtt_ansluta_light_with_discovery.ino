@@ -15,10 +15,11 @@
 #include <PubSubClient.h>         // https://github.com/knolleary/pubsubclient
 #include <ArduinoJson.h>          // https://github.com/bblanchon/ArduinoJson
 #include <ArduinoOTA.h>
+#include <SPI.h>
 #include "ha_mqtt_ansluta_light_with_discovery.h"
 
-#include "../AnslutaDemoCode/cc2500_REG.h"
-#include "../AnslutaDemoCode/cc2500_VAL.h"
+#include "cc2500_REG.h"
+#include "cc2500_VAL.h"
 
 // Radio stuff
 #define CC2500_SIDLE    0x36      // Exit RX / TX
@@ -37,14 +38,15 @@
 
 const byte delayA = 1;  //1++ 0-- No delay is also possible
 const unsigned int delayB = 2000; // 10000-- 20000++ 15000++     //KRITISCH
-const byte delayC = 10;  //255++ 128++ 64--
+const byte delayC = 16;  //255++ 128++ 64--
 const byte delayD = 0;  //200++ 128+++ 64+++ 32+++ 8++
 const byte delayE = 200;
 
-const boolean DEBUG = false;   //Some simple communication by RS232 // TODO merge with the other debug method used 
+const boolean DEBUG = true;   //Some simple communication by RS232 // TODO merge with the other debug method used 
 
 // fixed address of ANSLUTA remote
-static const byte baseAddress = 0x12;
+static const byte baseAddress = 0xD0;
+static const byte baseAddress2 = 0x9A;
 
 // Number of different remote channels
 static const int CHANNEL_NUM = 5;
@@ -53,7 +55,7 @@ static const int CHANNEL_NUM = 5;
 // each channel will turn ON 50% when the set brightness >= CHANNEL_THRESHOLD[i]
 // (The reasoning is that we can set the brightness of each light differently  
 // to give us some facsimile of having more brightness levels than just 0 - 50% - 100%)
-static const int[] CHANNEL_THRESHOLD = {85, 29, 57, 1, 113};
+int CHANNEL_THRESHOLD[] = {85, 29, 57, 1, 113};
 
 #if defined(DEBUG_TELNET)
 WiFiServer  telnetServer(23);
@@ -75,6 +77,7 @@ char jsonBuffer[256] = {0};
 
 volatile uint8_t cmd = CMD_NOT_DEFINED;
 
+OnOffBrightnessBulb bulb;
 WiFiClient    wifiClient;
 PubSubClient  mqttClient(wifiClient);
 
@@ -249,6 +252,8 @@ void handleMQTTMessage(char* p_topic, byte* p_payload, unsigned int p_length) {
       return;
     }
 
+    
+
     if (root.containsKey("state")) {
       if (strcmp(root["state"], MQTT_STATE_ON_PAYLOAD) == 0) {
         if (bulb.setState(true)) {
@@ -257,8 +262,6 @@ void handleMQTTMessage(char* p_topic, byte* p_payload, unsigned int p_length) {
           cmd = CMD_STATE_CHANGED;
         }
       } else if (strcmp(root["state"], MQTT_STATE_OFF_PAYLOAD) == 0) {
-        // stops the possible current effect
-        bulb.setEffect(EFFECT_NOT_DEFINED_NAME);
         
         if (bulb.setState(false)) {
           DEBUG_PRINT(F("INFO: State changed to: "));
@@ -279,7 +282,10 @@ void handleMQTTMessage(char* p_topic, byte* p_payload, unsigned int p_length) {
     // To send a remote pairing command, set a "pair" key in the MQTT command topic. 
     // pair: 0 => 0th channel, pair: 1 => 1st channel, etc.
     if (root.containsKey("pair")){
-      SendCommand(baseAddress, root["pair"], Light_PAIR);
+      int pair = root["pair"];
+      DEBUG_PRINT(F("PAIR: Channel "));
+      DEBUG_PRINTLN(pair);
+      SendCommand(baseAddress, baseAddress2+pair, Light_PAIR);
     }
   }
 }
@@ -327,16 +333,22 @@ void connectToMQTT() {
 #if defined(MQTT_HOME_ASSISTANT_SUPPORT)
         // MQTT discovery for Home Assistant
         JsonObject& root = staticJsonBuffer.createObject();
+        JsonArray& color_modes = root.createNestedArray("supported_color_modes");
         root["name"] = FRIENDLY_NAME;
-        root["platform"] = "mqtt_json";
+        root["schema"] = "json";
+        root["platform"] = "light";
         root["state_topic"] = MQTT_STATE_TOPIC;
         root["command_topic"] = MQTT_COMMAND_TOPIC;
         root["brightness"] = true;
+        root["unique_id"] = MQTT_CLIENT_ID;
+        color_modes.add("brightness");
         root.printTo(jsonBuffer, sizeof(jsonBuffer));
         publishToMQTT(MQTT_CONFIG_TOPIC, jsonBuffer);
 #endif
 
         subscribeToMQTT(MQTT_COMMAND_TOPIC);
+        // refresh the state
+        cmd = CMD_STATE_CHANGED;
       } else {
         DEBUG_PRINTLN(F("ERROR: The connection to the MQTT broker failed"));
         DEBUG_PRINT(F("INFO: MQTT username: "));
@@ -365,6 +377,11 @@ void handleCMD() {
       JsonObject& root = dynamicJsonBuffer.createObject();
       root["state"] = bulb.getState() ? MQTT_STATE_ON_PAYLOAD : MQTT_STATE_OFF_PAYLOAD;
       root["brightness"] = bulb.getBrightness();
+      if (bulb.getState()){
+        setBrightness(bulb.getBrightness());
+      } else {
+        setBrightness(0);
+      }
       root.printTo(jsonBuffer, sizeof(jsonBuffer));
       publishToMQTT(MQTT_STATE_TOPIC, jsonBuffer);
       break;
@@ -380,12 +397,12 @@ void setBrightness(int brightness){
   for (int i = 0; i < CHANNEL_NUM; i++) {
     lightLevel = Light_OFF;
     if (brightness >= CHANNEL_THRESHOLD[i]) {
-      lightLevel = Light_ON_50
+      lightLevel = Light_ON_50;
     }
     if (brightness >= CHANNEL_THRESHOLD[i] + 140) {
-      lightLevel = Light_ON_100
+      lightLevel = Light_ON_100;
     }
-    SendCommand(baseAddress, i, lightLevel);
+    SendCommand(baseAddress, baseAddress2+i, lightLevel);
   }
 }
 
@@ -427,11 +444,11 @@ void SendCommand(byte AddressByteA, byte AddressByteB, byte Command){
       Serial.print(AddressByteB,HEX);
     }
     for(byte i=0;i<50;i++){       //Send 50 times
-      Serial.print(".");
+      // Serial.print(".");
       SendStrobe(CC2500_SIDLE);   //0x36 SIDLE Exit RX / TX, turn off frequency synthesizer and exit Wake-On-Radio mode if applicable.
       SendStrobe(CC2500_SFTX);    //0x3B SFTX Flush the TX FIFO buffer. Only issue SFTX in IDLE or TXFIFO_UNDERFLOW states.
       digitalWrite(SS,LOW);
-      while (digitalRead(MISO) == HIGH) { /*TODO: timeout*/ };  //Wait untill MISO high
+      while (digitalRead(MISO) == HIGH) { /*TODO: timeout*/ };  //Wait until MISO high
       SPI.transfer(0x7F);
       delayMicroseconds(delayA);
       SPI.transfer(0x06);
@@ -522,12 +539,30 @@ void init_CC2500(){
 ///////////////////////////////////////////////////////////////////////////
 
 void setup() {
+
 #if defined(DEBUG_SERIAL)
   Serial.begin(115200);
 #elif defined(DEBUG_TELNET)
   telnetServer.begin();
   telnetServer.setNoDelay(true);
 #endif
+
+  // Init radio
+  pinMode(SS,OUTPUT);
+  if(DEBUG){
+    Serial.println("Debug mode");
+    Serial.print("Initializing radio");
+  }
+  SPI.begin();
+  SPI.beginTransaction(SPISettings(6000000, MSBFIRST, SPI_MODE0));    //Faster SPI mode, maximal speed for the CC2500 without the need for extra delays
+  digitalWrite(SS,HIGH);
+  SendStrobe(CC2500_SRES); //0x30 SRES Reset chip.
+  init_CC2500();
+  //  SendStrobe(CC2500_SPWD); //Enter power down mode    -   Not used in the prototype
+  WriteReg(0x3E,0xFF);  //Maximum transmit power - write 0xFF to 0x3E (PATABLE)
+  if(DEBUG){
+    Serial.println(" - Done");
+  }
 
   setupWiFi();
 
@@ -564,28 +599,6 @@ void setup() {
 
   cmd = CMD_STATE_CHANGED;
 
-  // Init radio
-  pinMode(SS,OUTPUT);
-  if(DEBUG){
-    Serial.begin(115200);
-    Serial.println("Debug mode");
-    Serial.print("Initialisation");
-  }
-  SPI.begin();
-  SPI.beginTransaction(SPISettings(6000000, MSBFIRST, SPI_MODE0));    //Faster SPI mode, maximal speed for the CC2500 without the need for extra delays
-  digitalWrite(SS,HIGH);
-  SendStrobe(CC2500_SRES); //0x30 SRES Reset chip.
-  init_CC2500();
-  //  SendStrobe(CC2500_SPWD); //Enter power down mode    -   Not used in the prototype
-  //WriteReg(0x3E,0xFF);  //Maximum transmit power - write 0xFF to 0x3E (PATABLE)
-  if(DEBUG){
-    Serial.println(" - Done");
-  }
-
-  delay(1000);
-  for (int i = 0; i < CHANNEL_NUM; i++) {
-    SendCommand(baseAddress, i, Light_ON_50);
-  }
 }
 
 void loop() {
@@ -611,5 +624,4 @@ void loop() {
 
   yield();
 
-  bulb.loop();
 }
